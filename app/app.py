@@ -128,7 +128,7 @@ def collect_data_from_sensors(plugin, model_info):
     Collect solar irradiance and cloud coverage data from sensors.
 
     Args:
-        plugin:
+        plugin: Waggle plugin.
         model_info: Object with info about model structure. See ModelInfo.
     
     Returns:
