@@ -1,0 +1,3 @@
+# Waggle Solar Irradiance Forecasting: Example Data
+## Description
+The example data here is for a **4 hours in, 1 hour out, 15 minute resampled** prediction. X_test is the collected, preprocessed data stream, and y_test is the observed data to compare against. Note that both X_test and y_test are arrays of time series--in other words, **feed something like X_test[0] into the model and compare with y_test[0]**. 

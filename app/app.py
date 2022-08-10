@@ -1,139 +1,261 @@
-import time
-import datetime
+# Uses historical solar irradiance and cloud coverage to forecast solar
+# irradiance.
+#
+# Plug-in works as follows:
+# 1) Collects data for four hours
+# 2) Predicts the next hour of data using the data collected in 1)
+# 3) Publishes predictions
+# 
+# (Note that the model does NOT repeatedly make predictions; each time
+# the plug-in is called, it collects data and makes a prediction once)
+#==============================================================================
+
+#==============================================================================
+# PRELIMINARY: imports, global vars, etc.
+#==============================================================================
+# imports for model
+import numpy as np # can we optimize and get rid of this?
+import os
+import tensorflow.lite as tflite
+from preprocess import preprocess_data
+from time import sleep
+# imports used for dummy data
+import pickle
+# imports for plug-in
 import argparse
-import multiprocessing
-from itertools import compress
-
-import cv2
-import numpy as np
-import tflite_runtime.interpreter as tflite
+from waggle.plugin import Plugin
 
 
-def open_video_capture(input):
-    capture = cv2.VideoCapture(input)
+# global vars
+TOPIC_HISTORICAL_SOL_IRR = "env.solar.irradiance"
+TOPIC_HISTORICAL_CLOUD_COVERAGE = "env.coverage.cloud"
+TOPIC_FORECASTED_SOL_IRR = 'env.forecasted.solar.irradiance'
 
-    if not capture.isOpened():
-        raise RuntimeError(f'could not open input {input}')
+#==============================================================================
+# CLASS : MODEL_INFO
+#==============================================================================
+# Nicely packages model with all of its relevant information
+#==============================================================================
+class ModelInfo:
+    '''
+    Wrapper class for model directory and various variables regarding model
+    architecture (i.e., # steps in/out, resample rate, etc.)
+    '''
+    def __init__(self, dirname, steps_in, steps_out, resample_rate,
+                 is_seasonal_available):
+        '''
+        dirname: Directory of model. Assumes seasonal and non-seasonal models
+            are in the same directory.
+        steps_in: The length of input in steps.
+        steps_out: The length of prediction in steps.
+        resample_rate: The model's expected data resampling in minutes.
+        is_seasonal_available: Whether seasonal models exist for the desired
+            prediction length. All models must have non-seasonal model.
+        n_features: Number of features fed into the model. Set to 2 (solar
+            irradiance and cloud coverage).
+        '''
+        self.dirname = dirname
+        self.steps_in = steps_in
+        self.steps_out = steps_out
+        self.resample_rate = resample_rate
+        self.is_seasonal_available = is_seasonal_available
+        self.n_features = 2
+    
+    # Static dict describing which month (by number) belongs in which season
+    # { spr: mar-may, sum: jun-aug, fal: sep-nov, win: dec-feb,
+    # non-seasonal: everything else (represented as -1) }
+    SEASONS_DICT = dict(zip(np.concatenate([[12],range(1,12), [-1]]),
+                            np.append(np.repeat(['winter','spring','summer',
+                                                'fall'], 3),
+                                    'non-seasonal')))
 
-    return capture
+def get_model_info(predict_len_hours):
+    '''
+    Returns the relevant model for the desired number of hours to predict.
+    Raises an error if a relevant model does not exist.
 
+    Args:
+        predict_len_hours: The length of prediction in hours
+        
+    Returns:
+        ModelInfo for the relevant model.
+    '''
+    # dictionary with presets of available models
+    MODELS_DICT = {1: ModelInfo('models/one_hour',
+                                steps_in=16, steps_out=4, resample_rate=15,
+                                is_seasonal_available=True),
+                   24: ModelInfo('models/one_day',
+                                steps_in=168, steps_out=28, resample_rate=30,
+                                is_seasonal_available=False)}
 
-def open_load_model(model_path):
+    if predict_len_hours in MODELS_DICT.keys():
+        return MODELS_DICT[predict_len_hours]
+    else:
+        raise ValueError('Model does not exist to predict the requested'
+                         'number of hours.')
+
+#==============================================================================
+# FUNCTIONS : DATA COLLECTION
+#==============================================================================
+def get_data(plugin, model_info, input_path):
+    '''
+    Retrieve data from SAGE network. If dummy_data is provided, will instead
+    retrieve dummy data from a file.
+    
+    Args:
+        model_info: Object with info about model structure. See ModelInfo.
+        input_path: Input path of data. If == None, collect live data from
+            sensors.
+    
+    Returns:
+        Preprocessed data.
+    '''
+    # if using input data
+    if input_path == None:
+        with open(input_path, 'rb') as handle:
+            data = pickle.load(handle)
+            data = np.float32(data)
+    # if collecting live data from sensors
+    else:
+        data = collect_data_from_sensors(plugin, model_info)
+    
+    preprocessed_data = preprocess_data(data, model_info)
+    return preprocessed_data
+        
+
+def collect_data_from_sensors(plugin, model_info):
+    '''
+    Collect solar irradiance and cloud coverage data from sensors.
+
+    Args:
+        plugin:
+        model_info: Object with info about model structure. See ModelInfo.
+    
+    Returns:
+        Unprocessed data as a dict of form {data topic: data}
+    '''
+    plugin.subscribe(TOPIC_HISTORICAL_SOL_IRR, TOPIC_HISTORICAL_CLOUD_COVERAGE)
+
+    sol_irr_data = []
+    cloud_data = []
+
+    # TODO: Questions
+    # - how frequently to collect data? currently set to every second
+    # - will this below method work? Or will there be gaps in data
+    # - is msg.value a str?
+    n_seconds_in = model_info.steps_in * model_info.resample_rate * 60
+    for i in range(n_seconds_in):
+        msg = plugin.get()
+        if msg.name == "env.solar.irradiance":
+            sol_irr_data.append[msg.value]
+        elif msg.name == "env.coverage.cloud":
+            cloud_data.append[msg.value]
+        sleep(1)
+
+    data = {TOPIC_HISTORICAL_SOL_IRR: sol_irr_data,
+            TOPIC_HISTORICAL_CLOUD_COVERAGE: cloud_data}
+    return data
+
+#==============================================================================
+# FUNCTIONS : FORECASTING
+#==============================================================================
+def get_model_path(model_info, month):
+    '''
+    Gets the path to the desired model. Assumes models are names in format:
+    '{season}.tflite', e.g. 'fall.tflite', 'non-seasonal.tflite'. See
+    SEASONS_DICT for the season names.
+
+    Args:
+        model_info: Object with info about model structure. See ModelInfo.
+        month: Month of the first day of input data.
+        
+    Returns:
+        Path to model.
+    '''
+    dirname = model_info.dirname
+    suffix = '.tflite'
+    season = ModelInfo.SEASONS_DICT[month]
+    return os.path.join(dirname, f'{season}{suffix}')
+
+def load_model(model_info, month):
+    '''
+    Create a tflite interpreter with the relevant model.
+
+    Args:
+        model_info: Object with info about model structure. See ModelInfo.
+        month: Month of the first day of input data.
+        
+    Returns:
+        The tflite interpreter created
+    '''
+    model_path = get_model_path(model_info, month)
     interpreter = tflite.Interpreter(model_path)
     interpreter.allocate_tensors()
     return interpreter
 
-
-def worker_main(args, heartbeat):
-    interval = int(args.interval)
-    print(f'opening input {args.input}', flush=True)
-    capture = open_video_capture(args.input)
-
-    # bind read_image function to capture
-    def read_image():
-        while True:
-            _, img = capture.read()
-            if img is not None:
-                return img
-            time.sleep(0.1)
-
-    # inference
-    def inferencing(interpreter, input_index, output_index, input_data):
-        interpreter.set_tensor(input_index, input_data)
-        interpreter.invoke()
-        return interpreter.get_tensor(output_index)
-
-    # softmax in numpy
-    def softmax(x):
-        e_x = np.exp(x)
-        return e_x / e_x.sum()
-
-    print('loading model and model config', flush=True)
-    interpreter = open_load_model(args.model)
-    input_details = interpreter.get_input_details()
-    input_index = input_details[0]['index']
-    output_details = interpreter.get_output_details()
-    output_index = output_details[0]['index']
-
-    class_names = np.array(['WithoutMask', 'WithMask'])
-
-    while True:
-        heartbeat.put(1)
-
-        if args.verbose:
-            print('reading image...', flush=True)
-        image = read_image()
-        if args.verbose:
-            print('read image', flush=True)
-
-        image_resized = cv2.resize(image, (224, 224))
-        image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
-        input_data = np.expand_dims(image_rgb, axis=0)
-        input_data = input_data.astype(np.float32)
-
-        if args.verbose:
-            start_t = time.time()
-        output_data = inferencing(interpreter, input_index, output_index, input_data)
+def predict(interpreter, input_data):
+    '''
+    Predicts the next values given input data. Number of time steps predicted
+    dependent upon model.
+    
+    Args:
+        interpreter: The tflite interpreter to predict the next values.
+        input_data: Data to be used for prediction.
         
-        if args.verbose:
-            print('{:.2f} elapsed for inferencing'.format(time.time() - start_t), flush=True)
+    Returns:
+        The predicted output.
+    '''
+    output = interpreter.get_output_details()[0]
+    input_ = interpreter.get_input_details()[0]
+    input_data = np.expand_dims(input_data,axis=0)
+    interpreter.set_tensor(input_['index'], input_data)
+    interpreter.invoke()
+    return interpreter.get_tensor(output['index'])
 
-        results = np.squeeze(output_data)
-        probabilities = softmax(results)
-
-        top_5 = results.argsort()[-5:][::-1]
-        print('results(prob: class):', flush=True)
-        for i in top_5:
-            print('{:8.6f}: {}'.format(
-                probabilities[i],
-                class_names[i]), flush=True)
-        
-        if interval > 0:
-            if args.verbose:
-                print('sleeping for {} seconds'.format(interval), flush=True)
-            time.sleep(interval)
-
-
+#==============================================================================
+# FUNCTIONS : MAIN
+#==============================================================================
 def main(args):
-    if args.verbose:
-        print('running in a verbose mode', flush=True)
+    '''
+    The "commander" function. Does all the actual work (i.e., getting and 
+    preprocessing data, loading the model, predicting)
 
-    heartbeat = multiprocessing.Queue()
-    worker = multiprocessing.Process(
-        target=worker_main, args=(args, heartbeat))
+    Args:
+        args: ArgumentParser of relevant arguments.
 
-    try:
-        worker.start()
-        while True:
-            heartbeat.get(timeout=30)  # throws an exception on timeout
-    except Exception:
-        pass
+    Publish:
+        Forecasted solar irradiance.
+    '''
+    with Plugin() as plugin:
+        model_info = get_model_info(args.predict_len_hours)
+        input_data = get_data(plugin, model_info, args.i)
+        model = load_model(model_info, args.month)
+        predictions = predict(model, input_data)
 
-    # if we reach this point, the worker process has stopped
-    worker.terminate()
-    raise RuntimeError('worker is no longer responding')
-
-
+        plugin.publish(TOPIC_FORECASTED_SOL_IRR, predictions)
+    
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-verbose', dest='verbose',
-        action='store_true', help='Verbose')
-    parser.add_argument(
-        '-input', dest='input',
-        action='store', default='/dev/video0',
-        help='Path to input device or stream')
-    parser.add_argument(
-        '-model', dest='model',
-        action='store', default='mask_classifier_mobilenetv2_224_tuned.tflite',
-        help='Path to model')
-    parser.add_argument(
-        '-image-size', dest='image_size',
-        action='store', default=224,
-        help='Input size of the model')
-    parser.add_argument(
-        '-interval', dest='interval',
-        action='store', default=0,
-        help='Time interval in seconds')
+    '''
+    The "informer" function. Sets up arguments for model to run and calls the
+    functions which do the actual work.
+    '''
+    parser = argparse.ArgumentParser(description='''
+                                     This program uses historical solar
+                                     irradiance and cloud coverage data to
+                                     predict future solar irradiance using a
+                                     pre-trained model.''')
 
+    parser.add_argument('-predict_len_hours', type=int,
+                        help='How long of a prediction to make. An appropriate'
+                             'model will be selected accordingly. See readme'
+                             'for available lengths.')
+    parser.add_argument('-month', type=int,
+                        help='If using seasonal model: month of the year.'
+                             'Model will assume non-seasonal if not specified',
+                        default=-1) # Q: can this be obtained w/o direct user input?
+    parser.add_argument('-i', type=str,
+                        help='Path to input file. If not specified, the plugin'
+                             'will take live data.',
+                        default=None)
+                        
     main(parser.parse_args())

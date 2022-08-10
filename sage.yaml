@@ -1,14 +1,14 @@
-name: helloworld-ml
+name: solar-irradiance-forecasting
 namespace: waggle
 version: "1.0"
-description: my hello world app
+description: Forecasting future solar irradiance using historical solar irradiance and cloud coverage
 
 source:
     architectures:
         - linux/amd64
         - linux/arm/v7
         - linux/arm64
-    url: https://github.com/waggle-sensor/plugin-helloworld.git
+    url: https://github.com/jongao1989/waggle-plugin-solar-irradiance-forecasting.git
     branch: master
 
 arguments:
