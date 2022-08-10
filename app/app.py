@@ -252,7 +252,7 @@ if __name__ == '__main__':
     parser.add_argument('-month', type=int,
                         help='If using seasonal model: month of the year.'
                              'Model will assume non-seasonal if not specified',
-                        default=-1) # Q: can this be obtained w/o direct user input?
+                        default=-1) # TODO: Question | can this be obtained w/o direct user input?
     parser.add_argument('-i', type=str,
                         help='Path to input file. If not specified, the plugin'
                              'will take live data.',
