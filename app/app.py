@@ -67,7 +67,7 @@ class ModelInfo:
     SEASONS_DICT = dict(zip(np.concatenate([[12],range(1,12), [-1]]),
                             np.append(np.repeat(['winter','spring','summer',
                                                 'fall'], 3),
-                                    'non-seasonal')))
+                                      'non-seasonal')))
 
 def get_model_info(predict_len_hours):
     '''

@@ -12,13 +12,12 @@
 # PRELIMINARY: imports, global vars, etc.
 #==============================================================================
 import app
-import numpy as np
+import numpy as np # TODO: Should we avoid np at all costs?
 from sklearn.preprocessing import MinMaxScaler
 
 #==============================================================================
 # FUNCTIONS : PREPROCESSING
 #==============================================================================
-# TODO: Should I just avoid np at all costs?
 def scale_data(unprocessed_data):
     '''
     Scales data by individual feature.
@@ -42,7 +41,7 @@ def scale_data(unprocessed_data):
         scalers[feat_name] = scaler
         scaled_data[feat_name] = scaled_feat_data
     return scaled_data, scalers[app.TOPIC_HISTORICAL_SOL_IRR]
-#==============================================================================
+
 def format_time_series(data, steps_in):
     '''
     Formats the given data into a time series of form [steps_in, n_features_in]
@@ -64,7 +63,7 @@ def format_time_series(data, steps_in):
 def preprocess_data(unprocessed_data, model_info):
     '''
     Converts unprocessed data into scaled, time series data.
-#==============================================================================
+
     Args:
         unprocessed_data: Solar irradiance and cloud coverage data as a
             dictionary of form: {TOPIC_HISTORICAL_SOL_IRR: sol_irr_data,

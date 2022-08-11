@@ -1,4 +1,4 @@
-FROM waggle/plugin-opencv:4.1.1
+FROM waggle/plugin-tensorflow:2.0.0
 
 RUN pip3 install xarray
 

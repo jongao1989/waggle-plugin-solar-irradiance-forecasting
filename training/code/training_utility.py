@@ -1,5 +1,3 @@
-import json
-import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import os
@@ -8,17 +6,16 @@ import tensorflow as tf
 
 from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.preprocessing import MinMaxScaler
+    
+from keras.metrics import mean_squared_error
+from keras.models import Sequential, clone_model
+from keras.layers import LSTM, GRU, SimpleRNN, Dense
 
-
+# Configure GPU growth. This fixed some bugs I got with GPU running out, but
+# may not be needed for all.
 gpu_devices = tf.config.experimental.list_physical_devices("GPU")
 for device in gpu_devices:
     tf.config.experimental.set_memory_growth(device, True)
-    
-
-    
-from keras.metrics import mean_squared_error
-from keras.models import Sequential, load_model, clone_model
-from keras.layers import LSTM, GRU, SimpleRNN, Dense
 
 #==============================================================================
 # CLASSES : DATA AND TRAINING ORGANIZATION
@@ -366,7 +363,7 @@ def pickle_scalers_to_file(scalers, dirname):
 #==============================================================================
 # MASTER
 #==============================================================================
-def optimize(dirname, n_steps_in, n_steps_out, resample_rate_min=15,
+def main(dirname, n_steps_in, n_steps_out, resample_rate_min=15,
     n_features=2):
     '''
     Master umbrella function. Loads data, performs hyperparameter optimization
