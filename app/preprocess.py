@@ -11,7 +11,7 @@
 #==============================================================================
 # PRELIMINARY: imports, global vars, etc.
 #==============================================================================
-import app
+import global_constants as myconst
 import numpy as np # TODO: Should we avoid np at all costs?
 from sklearn.preprocessing import MinMaxScaler
 
@@ -40,7 +40,7 @@ def scale_data(unprocessed_data):
             feat_data.reshape(-1,1)).reshape(feat_data.shape)
         scalers[feat_name] = scaler
         scaled_data[feat_name] = scaled_feat_data
-    return scaled_data, scalers[app.TOPIC_HISTORICAL_SOL_IRR]
+    return scaled_data, scalers[myconst.TOPIC_HISTORICAL_SOL_IRR]
 
 def format_time_series(data, steps_in):
     '''
@@ -56,8 +56,8 @@ def format_time_series(data, steps_in):
     '''
     time_series = []
     for i in range(steps_in):
-        time_series.append([data[app.TOPIC_HISTORICAL_SOL_IRR][i],
-                            data[app.TOPIC_HISTORICAL_CLOUD_COVERAGE][i]])
+        time_series.append([data[myconst.TOPIC_HISTORICAL_SOL_IRR][i],
+                            data[myconst.TOPIC_HISTORICAL_CLOUD_COVERAGE][i]])
     return time_series
 
 def preprocess_data(unprocessed_data, model_info):
@@ -74,7 +74,7 @@ def preprocess_data(unprocessed_data, model_info):
         Preprocessed data (a scaled time series).
         Scalar used to scale solar irradiance.
     '''
-    scaled_data = scale_data(unprocessed_data)
+    scaled_data, sol_irr_scaler = scale_data(unprocessed_data)
     scaled_time_series_data = format_time_series(scaled_data,
                                                  model_info.steps_in)
-    return scaled_time_series_data
+    return scaled_time_series_data, sol_irr_scaler

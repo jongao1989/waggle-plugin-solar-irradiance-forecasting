@@ -16,20 +16,16 @@
 # imports for model
 import numpy as np # can we optimize and get rid of this?
 import os
+from sklearn.preprocessing import MinMaxScaler # TODO: Are things like os, time, argparse already installed?
 import tensorflow.lite as tflite
 from preprocess import preprocess_data
 from time import sleep
 # imports used for dummy data
-import pickle
+import pickle # TODO: Should we install this in the docker container?
 # imports for plug-in
 import argparse
+import global_constants as myconst
 from waggle.plugin import Plugin
-
-
-# global vars
-TOPIC_HISTORICAL_SOL_IRR = "env.solar.irradiance"
-TOPIC_HISTORICAL_CLOUD_COVERAGE = "env.coverage.cloud"
-TOPIC_FORECASTED_SOL_IRR = 'env.forecasted.solar.irradiance'
 
 #==============================================================================
 # CLASS : MODEL_INFO
@@ -42,7 +38,7 @@ class ModelInfo:
     architecture (i.e., # steps in/out, resample rate, etc.)
     '''
     def __init__(self, dirname, steps_in, steps_out, resample_rate,
-                 is_seasonal_available):
+                 is_seasonal_available, sol_irr_scaler=None):
         '''
         dirname: Directory of model. Assumes seasonal and non-seasonal models
             are in the same directory.
@@ -51,6 +47,7 @@ class ModelInfo:
         resample_rate: The model's expected data resampling in minutes.
         is_seasonal_available: Whether seasonal models exist for the desired
             prediction length. All models must have non-seasonal model.
+        sol_irr_scaler: Sklearn MinMax scaler for solar irradiance.
         n_features: Number of features fed into the model. Set to 2 (solar
             irradiance and cloud coverage).
         '''
@@ -59,6 +56,7 @@ class ModelInfo:
         self.steps_out = steps_out
         self.resample_rate = resample_rate
         self.is_seasonal_available = is_seasonal_available
+        self.sol_irr_scaler = sol_irr_scaler
         self.n_features = 2
     
     # Static dict describing which month (by number) belongs in which season
@@ -111,18 +109,26 @@ def get_data(plugin, model_info, input_path):
         Preprocessed data.
     '''
     # if using input data
-    if input_path == None:
-        with open(input_path, 'rb') as handle:
-            data = pickle.load(handle)
-            data = np.float32(data)
+    if input_path != None:
+        data = get_data_from_input_file(input_path)
     # if collecting live data from sensors
     else:
         data = collect_data_from_sensors(plugin, model_info)
     
-    preprocessed_data = preprocess_data(data, model_info)
-    return preprocessed_data
-        
+    preprocessed_data, sol_irr_scaler = preprocess_data(data, model_info)
+    model_info.sol_irr_scaler = sol_irr_scaler
+    return preprocessed_data, model_info
 
+def get_data_from_input_file(input_path):
+    '''
+    Opens a data structured as dictionary {TOPIC_HISTORICAL_SOL_IRR:
+    sol_irr_data, TOPIC_HISTORICAL_CLOUD_COVERAGE: cloud_coverage_data}. See
+    convert_to_pickled_dict.ipynb in the folder 'training' for details.
+    '''
+    with open(input_path, 'rb') as handle:
+        data_dict = pickle.load(handle)
+    return data_dict
+  
 def collect_data_from_sensors(plugin, model_info):
     '''
     Collect solar irradiance and cloud coverage data from sensors.
@@ -134,7 +140,8 @@ def collect_data_from_sensors(plugin, model_info):
     Returns:
         Unprocessed data as a dict of form {data topic: data}
     '''
-    plugin.subscribe(TOPIC_HISTORICAL_SOL_IRR, TOPIC_HISTORICAL_CLOUD_COVERAGE)
+    plugin.subscribe(myconst.TOPIC_HISTORICAL_SOL_IRR,
+        myconst.TOPIC_HISTORICAL_CLOUD_COVERAGE)
 
     sol_irr_data = []
     cloud_data = []
@@ -152,8 +159,8 @@ def collect_data_from_sensors(plugin, model_info):
             cloud_data.append[msg.value]
         sleep(1)
 
-    data = {TOPIC_HISTORICAL_SOL_IRR: sol_irr_data,
-            TOPIC_HISTORICAL_CLOUD_COVERAGE: cloud_data}
+    data = {myconst.TOPIC_HISTORICAL_SOL_IRR: sol_irr_data,
+            myconst.TOPIC_HISTORICAL_CLOUD_COVERAGE: cloud_data}
     return data
 
 #==============================================================================
@@ -212,6 +219,16 @@ def predict(interpreter, input_data):
     interpreter.invoke()
     return interpreter.get_tensor(output['index'])
 
+def convert_for_publish(predictions, scaler):
+    '''
+    Converts the predictions array for publication. This consists of:
+    1) Inverse scaling the predictions
+    2) Converting to bytes
+    '''
+    inv_scaled_predictions = scaler.inverse_transform(predictions)
+    print(inv_scaled_predictions)
+    return bytes(bytearray(inv_scaled_predictions)) # TODO: Is this right format for publicaiton?
+
 #==============================================================================
 # FUNCTIONS : MAIN
 #==============================================================================
@@ -228,11 +245,14 @@ def main(args):
     '''
     with Plugin() as plugin:
         model_info = get_model_info(args.predict_len_hours)
-        input_data = get_data(plugin, model_info, args.i)
+        input_data, model_info = get_data(plugin, model_info, args.input_path)
         model = load_model(model_info, args.month)
         predictions = predict(model, input_data)
+        publishable_predictions = convert_for_publish(predictions,
+            model_info.sol_irr_scaler)
 
-        plugin.publish(TOPIC_FORECASTED_SOL_IRR, predictions)
+        plugin.publish(myconst.TOPIC_FORECASTED_SOL_IRR,
+                       publishable_predictions)
     
 if __name__ == '__main__':
     '''
@@ -245,15 +265,15 @@ if __name__ == '__main__':
                                      predict future solar irradiance using a
                                      pre-trained model.''')
 
-    parser.add_argument('-predict_len_hours', type=int,
+    parser.add_argument('-predict_len_hours', '-len', type=int,
                         help='How long of a prediction to make. An appropriate'
                              'model will be selected accordingly. See readme'
                              'for available lengths.')
-    parser.add_argument('-month', type=int,
+    parser.add_argument('-month', '-m', type=int,
                         help='If using seasonal model: month of the year.'
                              'Model will assume non-seasonal if not specified',
                         default=-1) # TODO: Question | can this be obtained w/o direct user input?
-    parser.add_argument('-i', type=str,
+    parser.add_argument('-input_path', '-i', type=str,
                         help='Path to input file. If not specified, the plugin'
                              'will take live data.',
                         default=None)
