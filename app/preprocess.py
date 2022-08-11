@@ -32,8 +32,8 @@ def scale_data(unprocessed_data):
         sol_irr_scaler (sklearn minmaxscaler): Scaler for solar irradiance.
     ''' 
     # scale each feature and store data and scaler in dictionaries
-    scalers = {}
     scaled_data = {}
+    scalers = {}
     for feat_name, feat_data in unprocessed_data.items():
         scaler = MinMaxScaler()
         scaled_feat_data = scaler.fit_transform(

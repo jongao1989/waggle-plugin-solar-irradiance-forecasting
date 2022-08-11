@@ -108,11 +108,11 @@ def get_data(plugin, model_info, input_path):
     Returns:
         Preprocessed data.
     '''
-    # if using input data
     if input_path != None:
+        # if using input data
         data = get_data_from_input_file(input_path)
-    # if collecting live data from sensors
     else:
+        # if collecting live data from sensors
         data = collect_data_from_sensors(plugin, model_info)
     
     preprocessed_data, sol_irr_scaler = preprocess_data(data, model_info)
