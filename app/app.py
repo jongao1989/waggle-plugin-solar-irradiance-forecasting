@@ -11,17 +11,18 @@
 #==============================================================================
 
 #==============================================================================
-# PRELIMINARY: imports, global vars, etc.
+# IMPORTS
 #==============================================================================
 # imports for model
 import numpy as np # can we optimize and get rid of this?
 import os
-from sklearn.preprocessing import MinMaxScaler # TODO: Are things like os, time, argparse already installed?
-import tensorflow.lite as tflite
+import tensorflow.lite as tflite # TODO: Are things like os, time, argparse already installed?
 from preprocess import preprocess_data
 from time import sleep
+
 # imports used for dummy data
 import pickle # TODO: Should we install this in the docker container?
+
 # imports for plug-in
 import argparse
 import global_constants as myconst
@@ -29,8 +30,6 @@ from waggle.plugin import Plugin
 
 #==============================================================================
 # CLASS : MODEL_INFO
-#==============================================================================
-# Nicely packages model with all of its relevant information
 #==============================================================================
 class ModelInfo:
     '''
@@ -131,7 +130,9 @@ def get_data_from_input_file(input_path):
   
 def collect_data_from_sensors(plugin, model_info):
     '''
-    Collect solar irradiance and cloud coverage data from sensors.
+    Collect solar irradiance and cloud coverage data from sensors. Note that
+    data is collected once each resample rate, so there is no actual
+    resampling.
 
     Args:
         plugin: Waggle plugin.
@@ -146,18 +147,15 @@ def collect_data_from_sensors(plugin, model_info):
     sol_irr_data = []
     cloud_data = []
 
-    # TODO: Questions
-    # - how frequently to collect data? currently set to every second
-    # - will this below method work? Or will there be gaps in data
-    # - is msg.value a str?
-    n_seconds_in = model_info.steps_in * model_info.resample_rate * 60
-    for i in range(n_seconds_in):
+    # TODO: Repair this section. How to collect two data streams at once?
+
+    for i in range(model_info.steps_in):
         msg = plugin.get()
         if msg.name == "env.solar.irradiance":
             sol_irr_data.append[msg.value]
         elif msg.name == "env.coverage.cloud":
             cloud_data.append[msg.value]
-        sleep(1)
+        sleep(model_info.resample_rate * 60)
 
     data = {myconst.TOPIC_HISTORICAL_SOL_IRR: sol_irr_data,
             myconst.TOPIC_HISTORICAL_CLOUD_COVERAGE: cloud_data}
@@ -213,9 +211,9 @@ def predict(interpreter, input_data):
         The predicted output.
     '''
     output = interpreter.get_output_details()[0]
-    input_ = interpreter.get_input_details()[0]
+    input = interpreter.get_input_details()[0]
     input_data = np.expand_dims(input_data,axis=0)
-    interpreter.set_tensor(input_['index'], input_data)
+    interpreter.set_tensor(input['index'], input_data)
     interpreter.invoke()
     return interpreter.get_tensor(output['index'])
 
@@ -224,10 +222,20 @@ def convert_for_publish(predictions, scaler):
     Converts the predictions array for publication. This consists of:
     1) Inverse scaling the predictions
     2) Converting to bytes
+
+    Args:
+        predictions: Predictions as an array
+        scaler: Scaler to inverse scale the predictions
+
+    Returns:
+        Inverse scaled predictions as bytes for publishing
     '''
-    inv_scaled_predictions = scaler.inverse_transform(predictions)
+    inv_scaled_predictions = scaler.inverse_transform(predictions)[0]
     print(inv_scaled_predictions)
-    return bytes(bytearray(inv_scaled_predictions)) # TODO: Is this right format for publicaiton?
+
+    # TODO: Is an array an publishable type? Or does it need to be converted to
+    #       bytes?
+    return bytes(inv_scaled_predictions)
 
 #==============================================================================
 # FUNCTIONS : MAIN
@@ -256,8 +264,8 @@ def main(args):
     
 if __name__ == '__main__':
     '''
-    The "informer" function. Sets up arguments for model to run and calls the
-    functions which do the actual work.
+    The chunk of code is run when this script is called. Sets up arguments for
+    model to run and calls the functions which do the actual work.
     '''
     parser = argparse.ArgumentParser(description='''
                                      This program uses historical solar
@@ -269,10 +277,11 @@ if __name__ == '__main__':
                         help='How long of a prediction to make. An appropriate'
                              'model will be selected accordingly. See readme'
                              'for available lengths.')
+    # TODO: If possible, determine month without user's direct input
     parser.add_argument('-month', '-m', type=int,
                         help='If using seasonal model: month of the year.'
                              'Model will assume non-seasonal if not specified',
-                        default=-1) # TODO: Question | can this be obtained w/o direct user input?
+                        default=-1)
     parser.add_argument('-input_path', '-i', type=str,
                         help='Path to input file. If not specified, the plugin'
                              'will take live data.',

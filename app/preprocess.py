@@ -9,7 +9,7 @@
 
 
 #==============================================================================
-# PRELIMINARY: imports, global vars, etc.
+# IMPORTS
 #==============================================================================
 import global_constants as myconst
 import numpy as np # TODO: Should we avoid np at all costs?

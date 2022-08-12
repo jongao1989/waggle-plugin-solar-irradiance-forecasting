@@ -1,3 +1,4 @@
+import data_utility
 import numpy as np
 import optuna
 import os
@@ -40,25 +41,25 @@ class ModelArchitecture():
     '''
     Class which holds various variables used throughout model
     '''
-    def __init__(self, steps_in, steps_out, n_features, train_test_data):
+    def __init__(self, steps_in, steps_out, train_test_data):
         '''
             n_steps_in (int): The number of timestamps fed into the model
-            n_steps_out (int): The number of timestamps predicted by the model
-            n_features (int): The number of features fed into the model. Note
-                that one feature is always predicted.        
+            n_steps_out (int): The number of timestamps predicted by the model     
             train_test_data (TrainTestData): Training/testing data
+            n_features (int): The number of features fed into the model. Set to
+                2. Note that one feature is always predicted.   
         '''
         self.steps_in = steps_in
         self.steps_out = steps_out
-        self.n_features = n_features
         self.train_test_data = train_test_data
+        self.n_features = 2
 
 class OptimizationInfo():
     '''
     Class which holds various variables used for training/optimization
     '''
-    def __init__(self, n_splits=5, n_epochs=140, batch_size=57,
-        min_improvement=0, patience=5, n_trials=20):
+    def __init__(self, n_trials, n_splits=5, n_epochs=140, batch_size=57,
+        min_improvement=0, patience=5):
         '''
             
         '''
@@ -191,10 +192,10 @@ def build_model(trial, arch):
     model = Sequential()
     if n_layers == 1:
         model.add(rnn(n_neurons, activation="tanh",
-            input_shape=(arch.steps_in,arch.n_features)))
+            input_shape=(arch.steps_in, arch.n_features)))
     else:
         model.add(rnn(n_neurons, activation="tanh", return_sequences=True,
-            input_shape=(arch.steps_in,arch.n_features)))
+            input_shape=(arch.steps_in, arch.n_features)))
         for i in range(n_layers-2):
             model.add(rnn(n_neurons, activation="tanh",
                 return_sequences=True))
@@ -277,10 +278,6 @@ def eval_model(model, X, y, return_pred=False):
     loss = mean_squared_error(pred, y)
     return loss, pred if return_pred else loss
 
-
-
-
-
 #==============================================================================
 # HYPERPARAMETER OPTIMIZATION
 #==============================================================================
@@ -326,72 +323,64 @@ def perform_study(n_trials, arch, opt_info):
     study.optimize(objective, opt_info.n_trials)
     return study
 
-def pickle_study_to_file(study, n_steps_in, n_steps_out, dirname):
-    '''
-    Pickles study to file, with file name of form "n_steps_in.n_steps_out.best_params". Pickles to the given directory
-    For example "3in.2out.{n_layers=4, n_nodes=128}"
-    
-    Args:
-        study (optuna study): Object containing all trials in a particular hyperparamter optimization search
-        n_steps_in (int): The number of timestamps fed into the model
-        n_steps_out (int): The number of timestamps predicted by the model
-        dirname (str): Directory to save file to
-
-    Returns:
-        none
-    '''
-    filename = f"{dirname}{n_steps_in}in.{n_steps_out}out.study"
-    file = open(filename, 'wb')
-    pickle.dump(study, file)
-    file.close()
-
-def pickle_scalers_to_file(scalers, dirname):
-    '''
-    Pickles scalers to file, with file name "scalers" Pickles to the given directory
-    
-            Parameters:
-                    scalers (list of sklearn scalers): Scalers used to transform given dataset
-                    dirname (str): Directory to save file to
-            Returns:
-                    none
-    '''
-    filename = f"{dirname}scalers"
-    file = open(filename, 'wb')
-    pickle.dump(scalers, file)
-    file.close()
-    
 #==============================================================================
-# MASTER
+# DATA LOADING
 #==============================================================================
-def main(dirname, n_steps_in, n_steps_out, resample_rate_min=15,
-    n_features=2):
+def get_data(dirname, steps_in, steps_out, resample_rate_min,
+    train_test_ratio, generate_new_data):
     '''
-    Master umbrella function. Loads data, performs hyperparameter optimization
-    study, and then pickles both studies and scalers used to file.
-    
-    Args:
-        dirname (str): Directory to save file to
-        n_steps_in (int): The number of timestamps fed into the model
-        n_steps_out (int): The number of timestamps predicted by the model
+    Loads pre-processed data from file, scales, and splits into train/test.
 
+    Args:
+        dirname: Directory of data.
+        steps_in: Length of input in steps.
+        steps_out: Length of prediction in steps.
+        resample_rate_min: Resample rate in minutes.
+        train_test_ratio: Fraction of data to use for training.
+        generate_new_data: If false, searches for pickled data files created by
+            data_utility.py.
+        
     Returns:
-        none
+        train_test_data: TrainTestData holding training and testing data.
+        scalers: Scalers for each feature.
+        batch_size
     '''
-    # load data and store frequently-used variables and data in object
-    X_train, X_test, y_train, y_test, scalers = get_data(dirname, n_steps_in, n_steps_out, resample_rate_min=resample_rate_min)
+    # load and scale data
+    if generate_new_data:
+        unscaled_X, unscaled_y = data_utility.main(steps_in, steps_out,
+            resample_rate_min, dirname, write_to_file=True)
+    else:
+        unscaled_X, unscaled_y = open_data_from_file(dirname, steps_in,
+            steps_out)
+        print(unscaled_X)
+    X, y, scalers = scale_data(unscaled_X, unscaled_y)    
+    
+    # determine sizes for batches, train/test split
+    hours_per_day = 14 # if using default day_time in training_utility.py
+    datapoints_per_hour = 60/resample_rate_min
+    datapoints_per_day = hours_per_day * datapoints_per_hour + 1
+    n_data_points = X.shape[0] + (steps_in - 1)
+    n_days = n_data_points / datapoints_per_day
+
+    train_size = np.floor(n_days * train_test_ratio)/n_days
+    batch_size = datapoints_per_day
+
+    # split into train/test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False,
+        train_size=train_size)
     train_test_data = TrainTestData(X_train, X_test, y_train, y_test)
-    arch = ModelArchitecture(n_steps_in, n_steps_out, n_features, train_test_data)
-    opt_info = OptimizationInfo()
 
-    study = perform_study(n_trials, arch, opt_info)
-    pickle_study_to_file(study, n_steps_in, n_steps_out, dirname)
-    pickle_scalers_to_file(scalers, dirname)
+    return train_test_data, scalers, batch_size
 
-def load_data_from_file(dirname, n_steps_in, n_steps_out, n_features=2):
-    # load the data by iterating through all files
-    X = np.empty((0,n_steps_in,n_features))
-    y = np.empty((0,n_steps_out))
+def open_data_from_file(dirname, steps_in, steps_out, n_features=2):
+    '''
+    Loads data from files in given directory.
+    '''
+    # Create empty arrays of the correct shape to fill with data.
+    X = np.empty((0,steps_in,n_features))
+    y = np.empty((0,steps_out))
     for file in os.listdir(dirname):
+        # Iterate through each file and fill X, y with data.
         filename = dirname + file
         print(filename)
         if file.endswith(".X"):
@@ -405,25 +394,111 @@ def load_data_from_file(dirname, n_steps_in, n_steps_out, n_features=2):
     return X, y
 
 def scale_data(X, y):
+    '''
+    Scales each variable independently.
+
+    Args:
+        X: Data inputted to model.
+        y: Data validated against.
+    
+    Returns:
+        Scaled X and y.
+        Scalers used for each feature.
+    '''
     scalers = []
     for i in range(X.shape[-1]):
         scaler = MinMaxScaler()
-        X[:,:,i] = scaler.fit_transform(X[:,:,i].reshape(-1,1)).reshape(X[:,:,i].shape)
+        X[:,:,i] = scaler.fit_transform(
+            X[:,:,i].reshape(-1,1)).reshape(X[:,:,i].shape)
         scalers.append(scaler)
     y = scalers[0].transform(y.reshape(-1,1)).reshape(y.shape)
     return X, y, scalers
 
-def get_data(dirname, n_steps_in, n_steps_out, train_size_percent=0.75, resample_rate_min=15):
-    # determine sizes for batches, train/test split
-    hours_per_day = 14
-    datapoints_per_hour = int(60/resample_rate_min)
-    datapoints_per_day = hours_per_day * datapoints_per_hour + 1
-    n_days = 1503 # manually defined, taken from looking at data
-    train_size = np.floor(n_days * train_size_percent)/n_days
-
-    # load, scale, and split data
-    X, y = load_data_from_file(dirname, n_steps_in, n_steps_out)
-    X, y, scalers = scale_data(X, y)    
+#==============================================================================
+# MASTER
+#==============================================================================
+def main(dirname, n_trials, steps_in, steps_out, resample_rate_min,
+    train_test_ratio=0.75, generate_new_data=False):
+    '''
+    Master umbrella function. Loads data, performs hyperparameter optimization
+    study, and then pickles both studies and scalers used to file.
     
-    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, train_size=train_size)
-    return X_train, X_test, y_train, y_test, scalers
+    Args:
+        dirname (str): Directory to save file to.
+        steps_in (int): The number of steps fed into the model.
+        steps_out (int): The number of steps predicted by the model.
+        n_trials (int): Number of trials to find the best model.
+        resample_rate_min (int): Time frequency to downsample data in minutes.
+        train_test_ratio: What fraction of the data to use for training.
+        generate_new_data: If false, searches for pickled data files created by
+            data_utility.py.
+
+    Returns:
+        None
+    '''
+    
+    train_test_data, scalers, batch_size = get_data(dirname, steps_in,
+        steps_out, resample_rate_min, train_test_ratio, generate_new_data)
+
+    # store frequently used variables into objects for easy access
+    arch = ModelArchitecture(steps_in, steps_out, train_test_data)
+    opt_info = OptimizationInfo(n_trials, batch_size=batch_size)
+
+    # train and optimize the model
+    study = perform_study(n_trials, arch, opt_info)
+
+    # save results to file
+    save_best_model_to_file(study, dirname)
+    pickle_study_to_file(study, arch)
+    pickle_scalers_to_file(scalers, dirname)
+
+def save_best_model_to_file(study, dirname):
+    '''
+    Saves the best performing model to a file using keras's built-in function.
+
+    Args:
+        study (optuna study): Containing all trials in a particular
+            hyperparamter optimization search
+        dirname (str): Directory to save file to
+    
+    Returns:
+        None
+    '''
+    best_model = study.best_trial.user_attrs["model"]
+    best_model.save(os.path.join(dirname, 'best_model'))
+
+def pickle_study_to_file(study, arch):
+    '''
+    Pickles study to file, with file name of form "n_steps_in.n_steps_out.best_params". Pickles to the given directory
+    For example "3in.2out.{n_layers=4, n_nodes=128}"
+    
+    Args:
+        study (optuna study): Object containing all trials in a particular hyperparamter optimization search
+        n_steps_in (int): The number of timestamps fed into the model
+        n_steps_out (int): The number of timestamps predicted by the model
+        dirname (str): Directory to save file to
+
+    Returns:
+        none
+    '''
+    filename = f"{arch.dirname}{arch.steps_in}in.{arch.steps_out}out.study"
+    file = open(filename, 'wb')
+    pickle.dump(study, file)
+    file.close()
+
+def pickle_scalers_to_file(scalers, dirname):
+    '''
+    Pickles scalers to file, with file name "scalers" Pickles to the given directory
+    
+    Args:
+        scalers (list of sklearn scalers): Scalers used to transform given dataset
+        dirname (str): Directory to save file to
+
+    Returns:
+        none
+    '''
+    filename = f"{dirname}scalers"
+    file = open(filename, 'wb')
+    pickle.dump(scalers, file)
+    file.close()
+    

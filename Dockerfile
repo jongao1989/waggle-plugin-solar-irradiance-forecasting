@@ -1,6 +1,6 @@
 FROM waggle/plugin-tensorflow:2.0.0
 
-RUN pip3 install xarray numpy sklearn
+RUN pip3 install numpy sklearn
 
 COPY app/ /app/
 WORKDIR /app
