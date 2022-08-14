@@ -226,7 +226,7 @@ def preprocess_data(data, preprocess_instr):
         preprocess_instr: Wrapper class for variables needed for preprocessing.
 
     Returns:
-        Preprocessed (but not scaled) time series data.
+        Preprocessed (but not converted to timeseries nor scaled) data.
     ''' 
     # convert data from xarray dataset to pandas dataframe for ease of use.
     data = data.to_dataframe()
@@ -240,12 +240,9 @@ def preprocess_data(data, preprocess_instr):
     # resample data (by mean)
     resample_rule = data.index.floor(preprocess_instr.resample_code)
     data = data.groupby(resample_rule).mean()
-    
-    # format to time series. do not scale since we haven't split train/test.
-    X, y = format_time_series(data, preprocess_instr)
 
     print("---------data preprocessed")
-    return X, y
+    return data
 
 def trim_pad_interpolate_data(data):
     '''
@@ -426,11 +423,43 @@ def get_difference_minutes(times):
     return divmod((datetime.combine(date.min, times[1]) -
         datetime.combine(date.min, times[0])).total_seconds(), 60)[0]
 
+# seasonal
+def format_time_series_and_pickle_seasonal(data, preprocess_instr, seasons,
+    write_to_file):
+    '''
+    '''
+    time_series_data_by_season = {}
+    for season_idx in range(len(seasons)):
+        # for each season, get the data for that season
+        season_data = data[data.index.month.isin(seasons[season_idx])]
+
+        if not season_data.empty:
+            # if data exists for that season, convert it to a time series and
+            # pickle it if requested
+            X, y = format_time_series_and_pickle_nonseasonal(season_data,
+                preprocess_instr, write_to_file=False)
+            time_series_data_by_season[season_idx] = {'X':X, 'y':y}
+
+            if write_to_file:
+                pickle_to_file(time_series_data_by_season[season_idx],
+                    preprocess_instr, str(seasons[season_idx]))
+
+    return time_series_data_by_season
+
+def format_time_series_and_pickle_nonseasonal(data, preprocess_instr, write_to_file):
+    '''
+    '''
+    X, y = format_time_series(data, preprocess_instr)
+
+    if write_to_file:
+        pickle_to_file({'X':X, 'y':y}, preprocess_instr)
+    return X, y
+
 #==============================================================================
 # FUNCTIONS : MAIN
 #==============================================================================
 def main(steps_in, steps_out, resample_rate_min, dirname,
-    write_to_file=True):
+    seasons=None, write_to_file=True):
     '''
     Loads data from file, trims/pads, resamples, and formats into time series.
     Writes data to file as requested.
@@ -440,6 +469,9 @@ def main(steps_in, steps_out, resample_rate_min, dirname,
         steps_out: Number of time steps for model to predict.
         resample_rate_min: Time frequency to downsample data in minutes.
         dirname: Directory of data.
+        seasons: List detailing which months are grouped together in a season.
+            If provided, will divide data into seasons (for use with a seasonal
+            model).
         write_to_file: whether or not to pickle data to file
                 
     Returns:
@@ -450,21 +482,25 @@ def main(steps_in, steps_out, resample_rate_min, dirname,
         resample_rate_min)
 
     data = open_data(preprocess_instr)
-    X, y = preprocess_data(data, preprocess_instr)
-    
-    # write to file
-    if write_to_file:
-        pickle_to_file({'X':X, 'y':y}, preprocess_instr)
-    
-    return X, y
+    data = preprocess_data(data, preprocess_instr)
 
-def pickle_to_file(things_to_pickle, preprocess_instr):
+
+    # format to time series and write to file. do not scale since we haven't
+    # split train/test. The process is different for seasonal/non-seasonal, so
+    # there are two separate functions for htem.
+    if seasons == None:
+        return format_time_series_and_pickle_nonseasonal(data, preprocess_instr, write_to_file)
+    else:
+        return format_time_series_and_pickle_seasonal(data, preprocess_instr, seasons, write_to_file)
+
+def pickle_to_file(things_to_pickle, preprocess_instr, season=''):
     '''
     Pickles each thing in given dictionary to file.
     
     Args:
         things_to_pickle: Dict of things to pickle, of form { name: thing }
         preprocess_instr: Wrapper class for variables needed for preprocessing.
+        season: Name of the season, if using a seasonal model.
             
     Returns:
         None
@@ -476,8 +512,10 @@ def pickle_to_file(things_to_pickle, preprocess_instr):
     data_info_str = '.'.join([f'{steps_in}in', f'{steps_out}out',
         preprocess_instr.resample_code])
     
-    filename_base = os.path.join(preprocess_instr.dirname, data_info_str)
+    full_dirname = os.path.join(preprocess_instr.dirname, season)
+    filename_base = os.path.join(full_dirname, data_info_str)
     for thing_name, thing in things_to_pickle.items():
-        thing_path = '.'.join([filename_base, thing_name, 'pickle'])
+        os.makedirs(full_dirname, exist_ok=True)
+        thing_path = '.'.join([filename_base, season, thing_name, 'pickle'])
         pickle.dump(thing, open(thing_path, 'wb'))
         print("---------pickled to file, path: " + thing_path)

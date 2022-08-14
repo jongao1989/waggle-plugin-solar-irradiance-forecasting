@@ -1,0 +1,2 @@
+# Example Training Data
+See [this link](https://drive.google.com/drive/folders/1--4frW2RCqb0Axh356DfUkCZfKdl8aSm?usp=sharing) for example data to download. Folder is shared to select individuals. See ```README.ipynb``` for information on data used in this project.
